@@ -1,27 +1,33 @@
 package kube
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type PodErrorMetadata struct {
 	// What went wrong
-	Reason  string // e.g., "CrashLoopBackOff", "FailedScheduling", "NotReady", "PendingTooLong"
-	Message string // human-readable error message
-	Summary string // short, readable description of issue — always populated for LLM
+	Summary string // One-liner for LLM (e.g. "Pod is in CrashLoopBackOff due to image pull error")
+	Reason  string // Precise signal (e.g. "CrashLoopBackOff", "FailedScheduling", etc)
+	Message string // Verbose human-readable explanation
 
 	// Where it happened
 	PodName       string
 	Namespace     string
-	ContainerName string // optional — only relevant for container-level issues
+	ContainerName string // Optional: only for container-level issues
 
 	// Optional diagnostics
-	//ExitCode    *int32       // only for terminated containers
-	Timestamp *metav1.Time // most recent issue time (can be from status or event)
-	//Events      []string     // human-readable event messages, optional -> later
+	Timestamp      *metav1.Time             // When it happened
+	ExitCode       *int32                   // For container termination issues
+	EventMessages  []string                 // Key warning events (for event checker)
+	Conditions     []corev1.PodCondition    // For deep analysis of pod readiness/scheduling
+	Status         corev1.PodPhase          // Pod phase at time of issue
+	InitStatus     []corev1.ContainerStatus // Optional: init container states
+	ContainerState *corev1.ContainerState   // Optional: specific container state if applicable
+
 	Labels      map[string]string
 	Annotations map[string]string
 
-	// Metadata
+	// Origin
 	Source string // "ContainerStatus", "PodPhase", "Condition", "EventChecker"
 }

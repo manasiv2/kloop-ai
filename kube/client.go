@@ -82,75 +82,130 @@ func getPods(namespace string) (*corev1.PodList, error) {
 	return errors
 }*/
 
-func GetSuspiciousFromPhase(namespace string) map[string]string {
+func GetSuspiciousFromPhase(namespace string) map[string]PodErrorMetadata {
 	pods, err := getPods(namespace)
 	if err != nil {
 		panic(err)
 	}
-	suspiciousPods := make(map[string]string)
+	suspiciousPods := make(map[string]PodErrorMetadata)
+	var addpod bool = false
 	for _, pod := range pods.Items {
 		pod_phase := pod.Status.Phase
 		if pod_phase != corev1.PodRunning && pod_phase != corev1.PodSucceeded {
-			suspiciousPods[string(pod.UID)] = fmt.Sprintf("Pod Phase Issue: %s", pod_phase)
+			//suspiciousPods[string(pod.UID)] = fmt.Sprintf("Pod Phase Issue: %s", pod_phase)
+			addpod = true
+		}
+		if addpod {
+			addpod = false
+			poderr := PodErrorMetadata{
+				Summary:     "Pod Phase Issue",
+				Reason:      string(pod.Status.Phase),
+				Message:     "Pod is not running or succeeded",
+				PodName:     pod.Name,
+				Namespace:   pod.Namespace,
+				Status:      pod.Status.Phase,
+				Timestamp:   pod.Status.StartTime,
+				Labels:      pod.Labels,
+				Annotations: pod.Annotations,
+				Conditions:  pod.Status.Conditions,
+				Source:      "PodPhase",
+			}
+
+			suspiciousPods[string(pod.UID)] = poderr
 		}
 	}
 	return suspiciousPods
 }
 
-func GetSuspiciousFromContainerStatus(namespace string) map[string]string {
+func GetSuspiciousFromContainerStatus(namespace string) map[string]PodErrorMetadata {
 	pods, err := getPods(namespace)
 	if err != nil {
 		panic(err)
 	}
-	suspiciousPods := make(map[string]string)
+	suspiciousPods := make(map[string]PodErrorMetadata)
+
 	for _, pod := range pods.Items {
 		for _, container := range pod.Status.ContainerStatuses {
+			var reason, msg string
+			var containerState *corev1.ContainerState = &container.State
+
 			if container.State.Waiting != nil {
-				if container.State.Waiting.Reason == "CrashLoopBackOff" || container.State.Waiting.Reason == "ImagePullBackOff" || container.State.Waiting.Reason == "ErrImagePull" {
-					suspiciousPods[string(pod.UID)] = fmt.Sprintf("Container Status Issue: %s", container.State.Waiting.Reason)
+				reason = container.State.Waiting.Reason
+				if reason == "CrashLoopBackOff" || reason == "ImagePullBackOff" || reason == "ErrImagePull" {
+					msg = container.State.Waiting.Message
 				}
-			} else if container.State.Terminated != nil {
-				if container.State.Terminated.ExitCode != 0 {
-					suspiciousPods[string(pod.UID)] = fmt.Sprintf("Container Status Issue: %s", container.State.Terminated.Reason)
+			} else if container.State.Terminated != nil && container.State.Terminated.ExitCode != 0 {
+				reason = container.State.Terminated.Reason
+				msg = container.State.Terminated.Message
+			}
+
+			if reason != "" {
+				poderr := PodErrorMetadata{
+					Summary:        "Container Status Issue",
+					Reason:         reason,
+					Message:        msg,
+					PodName:        pod.Name,
+					Namespace:      pod.Namespace,
+					ContainerName:  container.Name,
+					Timestamp:      pod.Status.StartTime,
+					Labels:         pod.Labels,
+					Annotations:    pod.Annotations,
+					Status:         pod.Status.Phase,
+					ContainerState: containerState,
+					Conditions:     pod.Status.Conditions,
+					Source:         "ContainerStatus",
 				}
-			} else {
-				// init containers -> can check later
+				suspiciousPods[string(pod.UID)] = poderr
 			}
 		}
 	}
 	return suspiciousPods
 }
 
-func GetSuspiciousFromConditions(namespace string) map[string]string {
+func GetSuspiciousFromConditions(namespace string) map[string]PodErrorMetadata {
 	pods, err := getPods(namespace)
 	if err != nil {
 		panic(err)
 	}
-	suspiciousPods := make(map[string]string)
+	suspiciousPods := make(map[string]PodErrorMetadata)
+
 	for _, pod := range pods.Items {
 		for _, condition := range pod.Status.Conditions {
-			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == "Unschedulable" {
-				suspiciousPods[string(pod.UID)] = fmt.Sprintf("Pod Condition Issue: %s, %s", condition.Type, condition.Reason)
-			} else if condition.Type == corev1.PodReady || condition.Type == corev1.ContainersReady {
-				if condition.Status == corev1.ConditionFalse || condition.Status == corev1.ConditionUnknown {
-					suspiciousPods[string(pod.UID)] = fmt.Sprintf("Pod Condition Issue: %s, %s", condition.Type, condition.Reason)
+			if (condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == "Unschedulable") ||
+				((condition.Type == corev1.PodReady || condition.Type == corev1.ContainersReady) && (condition.Status == corev1.ConditionFalse || condition.Status == corev1.ConditionUnknown)) {
+
+				poderr := PodErrorMetadata{
+					Summary:     "Pod Condition Issue",
+					Reason:      condition.Reason,
+					Message:     condition.Message,
+					PodName:     pod.Name,
+					Namespace:   pod.Namespace,
+					Timestamp:   &condition.LastTransitionTime,
+					Labels:      pod.Labels,
+					Annotations: pod.Annotations,
+					Status:      pod.Status.Phase,
+					Conditions:  pod.Status.Conditions,
+					Source:      "PodCondition",
 				}
+				suspiciousPods[string(pod.UID)] = poderr
+				break
 			}
 		}
 	}
 	return suspiciousPods
 }
 
-func GetSuspiciousFromEvents(namespace string) map[string]string {
+func GetSuspiciousFromEvents(namespace string) map[string]PodErrorMetadata {
 	client, err := getClient()
 	if err != nil {
-		panic(err.Error())
+		panic(err)
 	}
 	pods, err := getPods(namespace)
 	if err != nil {
 		panic(err)
 	}
-	suspiciousPods := make(map[string]string)
+	suspiciousPods := make(map[string]PodErrorMetadata)
+
 	for _, pod := range pods.Items {
 		pod_uid := pod.UID
 		events, er := client.CoreV1().Events(namespace).List(
@@ -162,11 +217,31 @@ func GetSuspiciousFromEvents(namespace string) map[string]string {
 		if er != nil {
 			panic(er)
 		}
+		var warnings []string
 		for _, event := range events.Items {
 			if event.Type == corev1.EventTypeWarning && (event.Reason == "FailedScheduling" || event.Reason == "BackOff" ||
 				event.Reason == "FailedMount" || event.Reason == "Unhealthy" || event.Reason == "FailedCreatePodSandBox" || event.Reason == "ErrImagePull" || event.Reason == "ImagePullBackOff") {
-				suspiciousPods[string(pod.UID)] = fmt.Sprintf("Event Issue: %s, %s", event.Type, event.Reason)
+
+				warnings = append(warnings, fmt.Sprintf("%s: %s", event.Reason, event.Message))
 			}
+		}
+
+		if len(warnings) > 0 {
+			poderr := PodErrorMetadata{
+				Summary:       "Warning Events Found",
+				Reason:        "EventType: Warning",
+				Message:       "Pod has one or more warning-level events",
+				PodName:       pod.Name,
+				Namespace:     pod.Namespace,
+				Timestamp:     pod.Status.StartTime,
+				Labels:        pod.Labels,
+				Annotations:   pod.Annotations,
+				Status:        pod.Status.Phase,
+				EventMessages: warnings,
+				Conditions:    pod.Status.Conditions,
+				Source:        "EventChecker",
+			}
+			suspiciousPods[string(pod.UID)] = poderr
 		}
 	}
 	return suspiciousPods
